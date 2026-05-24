@@ -1,0 +1,167 @@
+// jenkins/Jenkinsfile — Full DevSecOps Pipeline
+// Covers: build → SAST → image build → image scan → push → k8s deploy → DAST
+
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME        = "my-app"
+        IMAGE_NAME      = "my-app"
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        NEXUS_URL       = "TOOLS_IP:8081"
+        NEXUS_REPO      = "docker-hosted"
+        SONARQUBE_URL   = "http://TOOLS_IP:9000"
+        K8S_NAMESPACE   = "production"
+        KUBECONFIG      = credentials('k8s-kubeconfig')
+    }
+
+    tools {
+        // Requires JDK and Maven configured in Jenkins Global Tool Configuration
+        jdk   'jdk17'
+        maven 'maven3'
+    }
+
+    stages {
+
+        // ── 1. Checkout ───────────────────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        // ── 2. Build & Unit Tests ─────────────────────────────────────────────
+        stage('Build') {
+            steps {
+                sh 'mvn clean package -DskipTests=false'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/**/*.xml'
+                }
+            }
+        }
+
+        // ── 3. SAST — SonarQube ───────────────────────────────────────────────
+        stage('SAST - SonarQube') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${APP_NAME} \
+                            -Dsonar.host.url=${SONARQUBE_URL}
+                    '''
+                }
+            }
+        }
+
+        // ── 4. Quality Gate ────────────────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ── 5. Dependency Vulnerability Scan (OWASP) ──────────────────────────
+        stage('SCA - OWASP Dependency Check') {
+            steps {
+                dependencyCheck(
+                    additionalArguments: '--scan . --format HTML --format XML',
+                    odcInstallation: 'OWASP-DC'
+                )
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+
+        // ── 6. Docker Build ────────────────────────────────────────────────────
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        // ── 7. Container Image Scan — Trivy ───────────────────────────────────
+        stage('Image Scan - Trivy') {
+            steps {
+                sh """
+                    trivy image \
+                        --exit-code 1 \
+                        --severity HIGH,CRITICAL \
+                        --format template \
+                        --template "@/usr/share/trivy/contrib/html.tpl" \
+                        --output trivy-report.html \
+                        ${IMAGE_NAME}:${IMAGE_TAG} || true
+                """
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: '.',
+                    reportFiles: 'trivy-report.html',
+                    reportName: 'Trivy Image Scan Report'
+                ])
+            }
+        }
+
+        // ── 8. Push to Nexus ──────────────────────────────────────────────────
+        stage('Push Image') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-credentials',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+                    sh """
+                        docker login ${NEXUS_URL} -u ${NEXUS_USER} -p ${NEXUS_PASS}
+                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${NEXUS_URL}/${NEXUS_REPO}/${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${NEXUS_URL}/${NEXUS_REPO}/${IMAGE_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        // ── 9. Deploy to Kubernetes ───────────────────────────────────────────
+        stage('Deploy to K8s') {
+            steps {
+                sh """
+                    sed -i "s|IMAGE_PLACEHOLDER|${NEXUS_URL}/${NEXUS_REPO}/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+                    kubectl apply -f k8s/ --namespace=${K8S_NAMESPACE}
+                    kubectl rollout status deployment/${APP_NAME} --namespace=${K8S_NAMESPACE} --timeout=120s
+                """
+            }
+        }
+
+        // ── 10. DAST — OWASP ZAP ─────────────────────────────────────────────
+        stage('DAST - OWASP ZAP') {
+            steps {
+                sh """
+                    APP_URL=\$(kubectl get svc ${APP_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    docker run --rm -v \$(pwd):/zap/wrk owasp/zap2docker-stable zap-baseline.py \
+                        -t http://\$APP_URL \
+                        -r zap-report.html || true
+                """
+                publishHTML([
+                    allowMissing: true,
+                    reportDir: '.',
+                    reportFiles: 'zap-report.html',
+                    reportName: 'OWASP ZAP DAST Report'
+                ])
+            }
+        }
+
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "✅ Pipeline succeeded — ${APP_NAME}:${IMAGE_TAG} deployed."
+        }
+        failure {
+            echo "❌ Pipeline failed — check stage logs above."
+        }
+    }
+}

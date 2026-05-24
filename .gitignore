@@ -1,0 +1,15 @@
+# Terraform
+terraform/terraform.tfvars
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+
+# Ansible (si secrets)
+ansible/inventory/hosts          # IPs de tes serveurs
+ansible/group_vars/all/vault.yml # ansible-vault
+
+# Divers
+.DS_Store
+*.pem
+*.key

@@ -1,0 +1,97 @@
+---
+# roles/tools/tasks/main.yml
+# Runs SonarQube and Nexus as Docker containers
+
+- name: Create directories for tool data
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+  loop:
+    - /opt/sonarqube/data
+    - /opt/sonarqube/extensions
+    - /opt/sonarqube/logs
+    - /opt/nexus/data
+
+- name: Set vm.max_map_count for SonarQube (Elasticsearch requirement)
+  sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    reload: true
+
+- name: Set fs.file-max for SonarQube
+  sysctl:
+    name: fs.file-max
+    value: "65536"
+    state: present
+    reload: true
+
+- name: Deploy Docker Compose file for tools
+  copy:
+    dest: /opt/tools-compose.yml
+    content: |
+      version: "3.8"
+      services:
+        sonarqube:
+          image: sonarqube:10-community
+          container_name: sonarqube
+          restart: unless-stopped
+          ports:
+            - "9000:9000"
+          environment:
+            SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+            SONAR_JDBC_USERNAME: sonar
+            SONAR_JDBC_PASSWORD: sonar
+          volumes:
+            - /opt/sonarqube/data:/opt/sonarqube/data
+            - /opt/sonarqube/extensions:/opt/sonarqube/extensions
+            - /opt/sonarqube/logs:/opt/sonarqube/logs
+          depends_on:
+            - sonar-db
+          ulimits:
+            nofile:
+              soft: 65536
+              hard: 65536
+
+        sonar-db:
+          image: postgres:15
+          container_name: sonar-db
+          restart: unless-stopped
+          environment:
+            POSTGRES_USER: sonar
+            POSTGRES_PASSWORD: sonar
+            POSTGRES_DB: sonar
+          volumes:
+            - sonar-db-data:/var/lib/postgresql/data
+
+        nexus:
+          image: sonatype/nexus3:latest
+          container_name: nexus
+          restart: unless-stopped
+          ports:
+            - "8081:8081"
+          volumes:
+            - /opt/nexus/data:/nexus-data
+          user: "200"
+
+      volumes:
+        sonar-db-data:
+
+- name: Start tools stack
+  command: docker compose -f /opt/tools-compose.yml up -d
+  become: true
+
+- name: Open SonarQube port in UFW
+  ufw:
+    rule: allow
+    port: "9000"
+    proto: tcp
+
+- name: Open Nexus port in UFW
+  ufw:
+    rule: allow
+    port: "8081"
+    proto: tcp

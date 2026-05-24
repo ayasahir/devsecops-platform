@@ -1,0 +1,129 @@
+---
+# roles/kubernetes_common/tasks/main.yml
+# Applied to ALL k8s nodes (master + workers)
+
+- name: Disable swap (k8s requirement)
+  command: swapoff -a
+  changed_when: false
+
+- name: Remove swap from /etc/fstab permanently
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Load required kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Persist kernel modules
+  copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+
+- name: Set sysctl params for Kubernetes networking
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { key: "net.bridge.bridge-nf-call-iptables",  value: "1" }
+    - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+    - { key: "net.ipv4.ip_forward",                 value: "1" }
+
+- name: Install containerd
+  apt:
+    name: containerd.io
+    state: present
+    update_cache: true
+
+- name: Configure containerd to use SystemdCgroup
+  shell: |
+    mkdir -p /etc/containerd
+    containerd config default | tee /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: Restart and enable containerd
+  service:
+    name: containerd
+    state: restarted
+    enabled: true
+
+- name: Add Kubernetes apt repository key
+  shell: |
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Add Kubernetes apt repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
+    state: present
+    filename: kubernetes
+
+- name: Install kubeadm, kubelet, kubectl
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: true
+
+- name: Hold kubeadm, kubelet, kubectl at current version
+  dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Enable kubelet
+  service:
+    name: kubelet
+    state: started
+    enabled: true
+
+- name: Install Node Exporter (for Prometheus scraping)
+  shell: |
+    VERSION=1.7.0
+    wget -q "https://github.com/prometheus/node_exporter/releases/download/v${VERSION}/node_exporter-${VERSION}.linux-amd64.tar.gz"
+    tar xzf node_exporter-${VERSION}.linux-amd64.tar.gz
+    cp node_exporter-${VERSION}.linux-amd64/node_exporter /usr/local/bin/
+    rm -rf node_exporter-*
+    useradd -rs /bin/false node_exporter || true
+  args:
+    creates: /usr/local/bin/node_exporter
+
+- name: Create Node Exporter systemd service
+  copy:
+    dest: /etc/systemd/system/node_exporter.service
+    content: |
+      [Unit]
+      Description=Node Exporter
+      After=network.target
+
+      [Service]
+      User=node_exporter
+      ExecStart=/usr/local/bin/node_exporter
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start Node Exporter
+  systemd:
+    name: node_exporter
+    state: started
+    enabled: true
+    daemon_reload: true

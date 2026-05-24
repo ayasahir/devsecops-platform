@@ -1,0 +1,116 @@
+---
+# roles/monitoring/tasks/main.yml
+
+- name: Create monitoring directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+  loop:
+    - /opt/monitoring
+    - /opt/monitoring/prometheus
+    - /opt/monitoring/grafana
+
+- name: Deploy Prometheus configuration
+  copy:
+    dest: /opt/monitoring/prometheus/prometheus.yml
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+
+      scrape_configs:
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:9090']
+
+        - job_name: 'jenkins'
+          static_configs:
+            - targets: ['JENKINS_IP:9100']
+          # Install Jenkins Prometheus plugin to also scrape :8080/prometheus
+
+        - job_name: 'tools'
+          static_configs:
+            - targets: ['TOOLS_IP:9100']
+
+        - job_name: 'k8s-master'
+          static_configs:
+            - targets: ['K8S_MASTER_IP:9100']
+
+        - job_name: 'k8s-workers'
+          static_configs:
+            - targets:
+              - 'K8S_WORKER1_IP:9100'
+              - 'K8S_WORKER2_IP:9100'
+
+- name: Deploy Docker Compose for monitoring stack
+  copy:
+    dest: /opt/monitoring/compose.yml
+    content: |
+      version: "3.8"
+      services:
+        prometheus:
+          image: prom/prometheus:latest
+          container_name: prometheus
+          restart: unless-stopped
+          ports:
+            - "9090:9090"
+          volumes:
+            - /opt/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+            - prometheus-data:/prometheus
+          command:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.retention.time=15d'
+
+        grafana:
+          image: grafana/grafana:latest
+          container_name: grafana
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+          environment:
+            GF_SECURITY_ADMIN_PASSWORD: "ChangeMe123!"
+            GF_USERS_ALLOW_SIGN_UP: "false"
+          volumes:
+            - grafana-data:/var/lib/grafana
+
+        node-exporter:
+          image: prom/node-exporter:latest
+          container_name: node-exporter
+          restart: unless-stopped
+          ports:
+            - "9100:9100"
+          volumes:
+            - /proc:/host/proc:ro
+            - /sys:/host/sys:ro
+            - /:/rootfs:ro
+          command:
+            - '--path.procfs=/host/proc'
+            - '--path.sysfs=/host/sys'
+
+      volumes:
+        prometheus-data:
+        grafana-data:
+
+- name: Start monitoring stack
+  command: docker compose -f /opt/monitoring/compose.yml up -d
+
+- name: Deploy Node Exporter on ALL monitored hosts
+  # This task is only for the monitoring server itself.
+  # Node Exporter on other servers is handled by a separate play.
+  debug:
+    msg: "Node Exporter is running inside Docker on this host."
+
+- name: Open Prometheus port in UFW
+  ufw:
+    rule: allow
+    port: "9090"
+    proto: tcp
+
+- name: Open Grafana port in UFW
+  ufw:
+    rule: allow
+    port: "3000"
+    proto: tcp

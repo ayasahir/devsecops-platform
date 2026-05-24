@@ -1,0 +1,102 @@
+---
+# roles/kubernetes_master/tasks/main.yml
+
+- name: Check if cluster already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_conf
+
+- name: Initialize the Kubernetes cluster
+  command: >
+    kubeadm init
+    --pod-network-cidr=192.168.0.0/16
+    --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+  when: not kubeadm_conf.stat.exists
+  register: kubeadm_init
+
+- name: Create .kube directory for ubuntu user
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0700"
+
+- name: Copy admin.conf to ubuntu's kubeconfig
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: true
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+
+- name: Install Calico CNI
+  become_user: ubuntu
+  command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  when: not kubeadm_conf.stat.exists
+
+- name: Wait for control-plane node to become Ready
+  become_user: ubuntu
+  command: kubectl wait --for=condition=Ready node --all --timeout=120s
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  retries: 5
+  delay: 15
+  register: result
+  until: result.rc == 0
+
+- name: Generate join command for workers
+  command: kubeadm token create --print-join-command
+  register: join_command
+
+- name: Save join command to file (workers will read this)
+  copy:
+    dest: /tmp/k8s_join_command.sh
+    content: "{{ join_command.stdout }}"
+    mode: "0755"
+
+- name: Fetch join command to Ansible controller
+  fetch:
+    src: /tmp/k8s_join_command.sh
+    dest: /tmp/k8s_join_command.sh
+    flat: true
+
+# ── Security scanning tools ──────────────────────────────────────────────────
+
+- name: Install Helm
+  shell: |
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  args:
+    creates: /usr/local/bin/helm
+
+- name: Add Aqua Security Helm repo (Trivy Operator)
+  become_user: ubuntu
+  shell: |
+    helm repo add aquasecurity https://aquasecurity.github.io/helm-charts/
+    helm repo update
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+    HOME: /home/ubuntu
+
+- name: Install Trivy Operator for Kubernetes scanning
+  become_user: ubuntu
+  shell: |
+    helm upgrade --install trivy-operator aquasecurity/trivy-operator \
+      --namespace trivy-system \
+      --create-namespace \
+      --set="trivy.ignoreUnfixed=true"
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+    HOME: /home/ubuntu
+  register: trivy_operator
+  changed_when: "'deployed' in trivy_operator.stdout or 'upgraded' in trivy_operator.stdout"
+
+- name: Install kube-bench (CIS benchmark scanner)
+  shell: |
+    curl -L https://github.com/aquasecurity/kube-bench/releases/download/v0.7.3/kube-bench_0.7.3_linux_amd64.tar.gz | tar xz
+    mv kube-bench /usr/local/bin/
+  args:
+    creates: /usr/local/bin/kube-bench

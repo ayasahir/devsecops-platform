@@ -1,0 +1,8 @@
+###############################################
+# terraform.tfvars.example
+# Copy to terraform.tfvars and fill in values
+###############################################
+
+aws_region      = "eu-west-3"
+my_ip           = "X.X.X.X/32"
+public_key_path = "~/.ssh/devsecops-key.pub"

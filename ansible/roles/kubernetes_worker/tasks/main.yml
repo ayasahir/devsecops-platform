@@ -1,0 +1,24 @@
+---
+# roles/kubernetes_worker/tasks/main.yml
+
+- name: Check if already joined
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Copy join command from Ansible controller
+  copy:
+    src: /tmp/k8s_join_command.sh
+    dest: /tmp/k8s_join_command.sh
+    mode: "0755"
+  when: not kubelet_conf.stat.exists
+
+- name: Join the Kubernetes cluster
+  command: bash /tmp/k8s_join_command.sh
+  when: not kubelet_conf.stat.exists
+  register: join_result
+
+- name: Clean up join command
+  file:
+    path: /tmp/k8s_join_command.sh
+    state: absent

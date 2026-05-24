@@ -1,0 +1,62 @@
+---
+# roles/jenkins/tasks/main.yml
+
+- name: Install Java 17 (Jenkins requirement)
+  apt:
+    name: openjdk-17-jdk
+    state: present
+    update_cache: true
+
+- name: Add Jenkins GPG key
+  apt_key:
+    url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+    state: present
+
+- name: Add Jenkins repository
+  apt_repository:
+    repo: "deb https://pkg.jenkins.io/debian-stable binary/"
+    state: present
+
+- name: Install Jenkins
+  apt:
+    name: jenkins
+    state: present
+    update_cache: true
+
+- name: Enable and start Jenkins
+  service:
+    name: jenkins
+    state: started
+    enabled: true
+
+- name: Allow Jenkins through UFW
+  ufw:
+    rule: allow
+    port: "8080"
+    proto: tcp
+
+- name: Add jenkins user to docker group (so pipelines can run Docker)
+  user:
+    name: jenkins
+    groups: docker
+    append: true
+  notify: Restart Jenkins
+
+- name: Install kubectl on Jenkins server (for k8s deployments)
+  shell: |
+    curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm kubectl
+  args:
+    creates: /usr/local/bin/kubectl
+
+- name: Fetch Jenkins initial admin password (for reference)
+  command: cat /var/lib/jenkins/secrets/initialAdminPassword
+  register: jenkins_password
+  failed_when: false
+  changed_when: false
+
+- name: Print Jenkins initial password
+  debug:
+    msg: "Jenkins initial admin password: {{ jenkins_password.stdout }}"
+  when: jenkins_password.stdout is defined

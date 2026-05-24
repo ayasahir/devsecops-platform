@@ -1,0 +1,47 @@
+---
+# ansible/site.yml — Master playbook
+# Run: ansible-playbook -i inventory/hosts.ini site.yml
+
+- name: Apply common baseline to all servers
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Provision Jenkins server
+  hosts: jenkins
+  become: true
+  roles:
+    - jenkins
+    - docker
+
+- name: Provision Tools server (SonarQube + Nexus)
+  hosts: tools
+  become: true
+  roles:
+    - docker
+    - tools
+
+- name: Provision Monitoring server (Prometheus + Grafana)
+  hosts: monitoring
+  become: true
+  roles:
+    - monitoring
+
+- name: Provision Kubernetes nodes (common pre-reqs)
+  hosts: k8s
+  become: true
+  roles:
+    - kubernetes_common
+
+- name: Bootstrap Kubernetes control plane
+  hosts: k8s_master
+  become: true
+  roles:
+    - kubernetes_master
+
+- name: Join Kubernetes workers
+  hosts: k8s_workers
+  become: true
+  roles:
+    - kubernetes_worker
