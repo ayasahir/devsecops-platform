@@ -401,3 +401,19 @@ resource "aws_instance" "k8s_worker" {
     Role    = "k8s-worker"
   }
 }
+
+
+# ─────────────────────────────────────────────
+# 12. Préparer le fichier d'inventaire pour Ansible
+# ─────────────────────────────────────────────
+resource "local_file" "ansible_inventory" {
+  filename = "../ansible/inventory/hosts.ini"
+  
+  content = templatefile("./hosts.ini.tpl", {
+    jenkins_ip     = aws_instance.jenkins.public_ip
+    tools_ip       = aws_instance.tools.public_ip
+    monitoring_ip  = aws_instance.monitoring.public_ip
+    k8s_master_ip  = aws_instance.k8s_master.public_ip
+    k8s_worker_ips = aws_instance.k8s_worker[*].public_ip
+  })
+}
