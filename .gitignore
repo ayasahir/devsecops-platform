@@ -8,6 +8,7 @@ terraform/.terraform.lock.hcl
 # Ansible (si secrets)
 ansible/inventory/hosts.ini          # IPs de tes serveurs
 ansible/group_vars/all/vault.yml # ansible-vault
+ansible/ansible.cfg
 
 # Divers
 .DS_Store
