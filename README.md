@@ -84,13 +84,20 @@ checkov -d .
 
 ## Step 2 — Configure Servers (Ansible)
 
-Fill in the IPs from Step 1 into the inventory file:
+terraform apply  →  IPs connues
+        ↓
+ansible-playbook site.yml
+        ↓
+[all]        → common             (sécurité baseline)
+[jenkins]    → jenkins            (CI/CD) + docker
+[tools]      → docker + tools     (SonarQube + Nexus)
+[monitoring] → monitoring         (Prometheus + Grafana)
+[k8s]        → kubernetes_common  (prérequis tous nœuds)
+[k8s_master] → kubernetes_master  (init cluster + Calico + Trivy Operator)
+[k8s_workers]→kubernetes_worker   (join cluster)
 
-```bash
-cd ansible/
-vim inventory/hosts.ini   # replace JENKINS_IP, TOOLS_IP, etc.
 
-# Also update prometheus.yml targets in roles/monitoring/tasks/main.yml
+# Update prometheus.yml targets in roles/monitoring/tasks/main.yml
 
 # Run the full playbook
 ansible-playbook -i inventory/hosts.ini site.yml
