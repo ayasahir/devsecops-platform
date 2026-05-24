@@ -92,9 +92,6 @@ vim inventory/hosts.ini   # replace JENKINS_IP, TOOLS_IP, etc.
 
 # Also update prometheus.yml targets in roles/monitoring/tasks/main.yml
 
-# Test connectivity
-ansible all -i inventory/hosts.ini -m ping
-
 # Run the full playbook
 ansible-playbook -i inventory/hosts.ini site.yml
 ```
