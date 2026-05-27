@@ -1,7 +1,7 @@
 ---
 # roles/jenkins/tasks/main.yml
 
-- name: Install Java 17 (Jenkins requirement)
+- name: Install Java 17 
   apt:
     name: openjdk-17-jdk
     state: present
